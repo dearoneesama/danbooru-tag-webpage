@@ -4,7 +4,7 @@ from io import BytesIO
 from typing import Literal
 from uuid import uuid4
 
-from fastapi import FastAPI, UploadFile, HTTPException, Request
+from fastapi import FastAPI, UploadFile, HTTPException, Request, Header, Depends
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 from slowapi import Limiter
@@ -73,12 +73,17 @@ class CheckImageResultResponse(BaseModel):
     result: list[ResultEntry]
 
 
+def valid_upload_length(content_length: int = Header(..., lt=20_000_000)):  # ~20MB
+    return content_length
+
+
 @app.post(
     '/api/check-image',
     responses={
         200: { 'model': CheckImageResultResponse },
         500: {},
     },
+    dependencies=[Depends(valid_upload_length)],
     description='Synchronous API to obtain the tags for an image. User uploads an image to this endpoint '
                 'and waits for result to be available. Requests may fail with timeout if the processing time '
                 'is too long.',
@@ -112,6 +117,7 @@ class CheckImageResultTokenResult(BaseModel):
     responses={
         201: { 'model': CheckImageResultTokenResult },
     },
+    dependencies=[Depends(valid_upload_length)],
     description='Asynchronous API to obtain the tags for an image. User uploads an image to this endpoint '
                 'and obtains a token. They need to use this token to poll for the results.',
 )
