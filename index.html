@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="X-UA-Compatible" content="ie=edge">
+  <title>Image Tag Estimation</title>
+
+  <style>
+    html, body {
+      font-family: 'Raleway', sans-serif;
+      font-size: 17px;
+      margin: 0;
+      box-sizing: border-box;
+      width: 100%;
+      background-color: gold;
+      min-height: 100vh;
+    }
+  
+    p {
+      word-wrap: break-word;
+    }
+  
+    a, a:visited {
+      color: rgb(48, 0, 102);
+    }
+  
+    button, input::file-selector-button {
+      border: 1px solid rgba(0, 0, 0, 0.719);
+      border-radius: 0;
+      padding: .4rem .8rem;
+      background-color: rgba(240, 248, 255, 0.644);
+      font-weight: bold;
+    }
+  
+    button:active, input::file-selector-button:active {
+      background-color: rgba(240, 248, 255, 0.308);
+    }
+  
+    #main {
+      padding: 1rem;
+    }
+  
+    #image-preview {
+      cursor: pointer;
+    }
+  
+    .image-preview-small {
+      max-width: 700px;
+    }
+  
+    #result-table th:first-of-type,
+    #result-table td:first-of-type {
+      text-align: left;
+    }
+  
+    #result-table th:nth-of-type(2),
+    #result-table td:nth-of-type(2) {
+      text-align: right;
+    }
+  
+    @media only screen and (max-width: 600px) {
+      .image-preview-small {
+        max-width: 90vw;
+      }
+    }
+  </style>
+</head>
+
+<body>
+  <div id="root"></div>
+
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  <script crossorigin src="https://unpkg.com/babel-standalone@6/babel.min.js"></script>
+
+  <script type="text/babel">
+    const PageStates = {
+      Select: 0,
+      InProgress: 1,
+      Done: 2,
+    };
+
+    const Main = () => {
+      const [ page, setPage ] = React.useState(PageStates.Select);  // PageStates
+      const [ currentFile, setCurrentFile ] = React.useState(null);  // any | null
+      const [ postUploadPayload, setPostUploadPayload ] = React.useState(null);  // any | null
+      const [ errorBody, setErrorBody ] = React.useState(null);  // string | null
+
+      const onUpload = async file => {
+        setCurrentFile(file);
+        setErrorBody(null);
+        setPage(PageStates.InProgress);
+
+        const form = new FormData();
+        form.append('file', file, file.name);
+
+        let token;
+        try {
+          const resp = await fetch('/api/check-image-async', {
+            method: 'POST',
+            body: form,
+          });
+          const json = await resp.json();
+          if (json.token === undefined) {
+            throw Error(json.detail);
+          }
+          token = json.token;
+        } catch (e) {
+          setErrorBody(`${e}`);
+          setPage(PageStates.Done);
+          return;
+        }
+
+        setTimeout(async function poll() {
+          try {
+            const resp = await fetch(`/api/check-image-async?token=${token}`);
+            if (resp.status === 204) {
+              setTimeout(poll, 10000);
+              return;
+            }
+            const json = await resp.json();
+            if (json.result === undefined) {
+              throw Error(json.detail ? json.detail : resp.statusText);
+            }
+            setPostUploadPayload(json.result);
+          } catch (e) {
+            setErrorBody(`${e}`);
+          }
+          setPage(PageStates.Done);
+        }, 10000);
+      };
+
+      return (
+        <div id="main">
+          {page === PageStates.Select ?
+            <ImageSelection onUpload={onUpload} />
+            : page === PageStates.InProgress ?
+              <LoadingText />
+            : <ResultScreen
+                file={currentFile}
+                resultPayload={postUploadPayload}
+                error={errorBody}
+                done={() => setPage(PageStates.Select)}
+              />
+          }
+          <p>
+            The tag estimation depends on the <a href="https://github.com/KichangKim/DeepDanbooru" target="_blank">DeepDanbooru</a> project.
+          </p>
+        </div>
+      );
+    };
+
+    const LoadingText = () => {
+      const totalNumDots = 5;
+      const [ numDots, setNumDots ] = React.useState(1);
+      const tm = React.useRef();
+
+      React.useEffect(() => {
+        setTimeout(function recur() {
+          setNumDots(curr => 1 + (curr) % (totalNumDots));
+          tm.current = setTimeout(recur, 700);  
+        }, 700);
+        return () => clearTimeout(tm.current);
+      }, []);
+
+      return (
+        <div className="loading-box">
+          <p>Processing {''.padStart(numDots, '*')}</p>
+          <p>When it completes, this page will refresh automatically.</p>
+        </div>
+      );
+    };
+
+    /**
+     * @param {{ onUpload: (file: any) => void }} p
+     */
+    const ImageSelection = p => {
+      const [ currentFile, setCurrentFile ] = React.useState(null);
+
+      return (
+        <div>
+          <p>Please upload a (preferably anime) image.</p>
+          <input type="file" onChange={e => setCurrentFile(e.target.files[0])} />
+          <button type="button" onClick={() => currentFile && p.onUpload(currentFile)}>Confirm</button>
+          {currentFile ? <ImagePreview file={currentFile} /> : null}
+        </div>
+      );
+    };
+
+    const ImagePreviewStates = {
+      Off: 0,
+      Regular: 1,  // smaller size
+      Orig: 2,  // original size
+    };
+
+        /**
+     * @param {{
+     *   file: any,
+     * }} p
+     */
+    const ImagePreview = p => {
+      const [ imgURL, setImgURL ] = React.useState(null);  // string | null
+      const [ expanded, setExpanded ] = React.useState(ImagePreviewStates.Off);  // ImagePreviewStates
+
+      React.useEffect(() => () => imgURL && URL.revokeObjectURL(imgURL), []);
+
+      React.useEffect(() => {
+        if (imgURL) {
+          URL.revokeObjectURL(imgURL);
+          setImgURL(URL.createObjectURL(p.file));
+        }
+      }, [p.file]);
+
+      const onClickButton = () => {
+        if (!imgURL) {
+          setImgURL(URL.createObjectURL(p.file));
+        }
+        setExpanded(expanded ? ImagePreviewStates.Off : ImagePreviewStates.Regular);
+      };
+
+      const onClickImg = () => {
+        setExpanded(expanded === ImagePreviewStates.Regular ? ImagePreviewStates.Orig : ImagePreviewStates.Regular);
+      };
+
+      return (
+        <div>
+          <p>
+            File name: {p.file.name}
+            <br />
+            File size: {p.file.size} bytes
+            <br />
+            <button type="button" onClick={onClickButton}>{expanded ? 'Hide preview' : 'Preview'}</button>
+          </p>
+          {expanded ?
+            <img
+             src={imgURL}
+             onClick={onClickImg}
+             id="image-preview"
+             {...(expanded === ImagePreviewStates.Regular ? { className: 'image-preview-small' } : {})}
+            />
+            : null}
+        </div>
+      );
+    };
+
+    /**
+     * @param {{
+     *   file: any,
+     *   resultPayload: any[],
+     *   error: string | null,
+     *   done: () => void,
+     * }} p
+     */
+    const ResultScreen = p => {
+      return (
+        <div>
+          <ImagePreview file={p.file} />
+          {p.error ?
+            <p>
+              Oops! We encountered an error.
+              <br />
+              {p.error}
+            </p>
+            : <table id="result-table">
+                <thead>
+                  <tr>
+                    <th>Tag</th>
+                    <th>Confidence</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {p.resultPayload.map((x, i) => (
+                    <tr key={i}>
+                      <td>
+                        <a href={`https://danbooru.donmai.us/wiki_pages/${x.tag}`} target="_blank">{x.tag}</a>
+                      </td>
+                      <td>{x.score}</td>
+                    </tr>
+                  ))}
+              </tbody>
+              </table>
+          }
+          <p>
+            <button type="button" onClick={p.done}>Go back</button>
+          </p>
+        </div>
+      );
+    };
+
+    ReactDOM.createRoot(document.querySelector('#root'))
+      .render(<Main />);
+  </script>
+</body>
+
+</html>
